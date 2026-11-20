@@ -56,8 +56,13 @@ site=/var/www/tgweb
 
 finish() {
     printf '\nSite: https://%s/\nTelegram WEB Proxy:\n' "$domain"
-    cat "$link"
-    printf '\nSaved for root in %s\n' "$link"
+    if [[ -f /etc/telemt/webproxy-links.txt ]]; then
+        cat /etc/telemt/webproxy-links.txt
+        printf '\nSaved for root in /etc/telemt/webproxy-links.txt\n'
+    else
+        cat "$link"
+        printf '\nSaved for root in %s\n' "$link"
+    fi
 }
 
 if [[ -f $link ]]; then
@@ -159,6 +164,8 @@ if ! id telemt >/dev/null 2>&1; then
 fi
 
 secret=$(openssl rand -hex 16)
+secret_dept1=$(openssl rand -hex 16)
+secret_dept2=$(openssl rand -hex 16)
 changed=1
 install -d -o root -g telemt -m 0750 /etc/telemt
 install -d -m 0755 "$site"
@@ -169,10 +176,12 @@ use_middle_proxy = true
 log_level = "normal"
 
 [general.links]
-show = ["web-user"]
+show = ["web-user", "web-dept1", "web-dept2"]
 
 [access.users]
 web-user = "$secret"
+web-dept1 = "$secret_dept1"
+web-dept2 = "$secret_dept2"
 
 [[server.listeners]]
 ip = "127.0.0.1"
@@ -202,9 +211,23 @@ index = "index.html"
 [[web.vhosts.profiles]]
 user = "web-user"
 secret_mode = "dd"
-max_sessions = 4
-max_streams = 128
-max_streams_per_session = 32
+max_sessions = 64
+max_streams = 2048
+max_streams_per_session = 128
+
+[[web.vhosts.profiles]]
+user = "web-dept1"
+secret_mode = "dd"
+max_sessions = 64
+max_streams = 2048
+max_streams_per_session = 128
+
+[[web.vhosts.profiles]]
+user = "web-dept2"
+secret_mode = "dd"
+max_sessions = 64
+max_streams = 2048
+max_streams_per_session = 128
 EOF
 
 # The archive below contains the static NX Edge site bundled with this installer.
@@ -424,7 +447,8 @@ status=$(curl -sS --max-time 5 --resolve "$domain:443:127.0.0.1" \
 [[ $status == 200 || $status == 404 ]] || die "Caddy returned HTTP $status for the WEB route."
 
 install -m 0600 /dev/null "$link"
-python3 - "$config" > "$link" <<'PY'
+install -m 0600 /dev/null /etc/telemt/webproxy-links.txt
+python3 - "$config" "$link" /etc/telemt/webproxy-links.txt <<'PY'
 import base64
 import sys
 import tomllib
@@ -433,10 +457,17 @@ from urllib.parse import quote
 with open(sys.argv[1], "rb") as config_file:
     config = tomllib.load(config_file)
 vhost = config["web"]["vhosts"][0]
-secret = bytes.fromhex(config["access"]["users"]["web-user"])
-credential = base64.urlsafe_b64encode(b"\x70\xdd" + secret).decode().rstrip("=")
 endpoint = quote(vhost["host"] + "/" + vhost["base_path"], safe="")
-print(f"tg://webproxy?server={endpoint}&secret={credential}")
+links = {}
+for user in ("web-user", "web-dept1", "web-dept2"):
+    secret = bytes.fromhex(config["access"]["users"][user])
+    credential = base64.urlsafe_b64encode(b"\x70\xdd" + secret).decode().rstrip("=")
+    links[user] = f"tg://webproxy?server={endpoint}&secret={credential}"
+with open(sys.argv[2], "w", encoding="utf-8") as single:
+    single.write(links["web-user"] + "\n")
+with open(sys.argv[3], "w", encoding="utf-8") as all_links:
+    for user, value in links.items():
+        all_links.write(f"{user}: {value}\n")
 PY
 complete=1
 finish
